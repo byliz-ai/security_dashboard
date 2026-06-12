@@ -1230,9 +1230,19 @@ function fmtDate(d) {
   catch { return d; }
 }
 
-/* Status persistence (localStorage, keyed by URL) */
+/* Status persistence (localStorage, keyed by URL).
+   Uses a 32-bit djb2 hash of the FULL sourceUrl (or description as fallback)
+   to guarantee a unique-per-incident key. The previous implementation
+   base64-encoded the first 80 chars and truncated to 28, which collided for
+   incidents whose URLs shared a prefix (ReliefWeb, SONNA, Eye Radio, etc.) — so
+   updating one status cascaded to every incident sharing that key. */
 function sKey(inc) {
-  return "inc_" + btoa(encodeURIComponent((inc.sourceUrl||inc.description).slice(0,80))).slice(0,28);
+  const s = inc.sourceUrl || inc.description || "";
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;  // h * 33 + c
+  }
+  return "inc_" + h.toString(36);
 }
 function getStatus(inc)         { return lsGet(sKey(inc), "new"); }
 function setStatus(inc, status) { lsSet(sKey(inc), status); }
