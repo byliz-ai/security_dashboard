@@ -1,9 +1,12 @@
 # East Africa Security Dashboard
 
-Self-updating static dashboard tracking security incidents across Sudan, South Sudan, DRC, Somalia, and Ethiopia. A Python pipeline scrapes curated news + X (Twitter via Nitter) sources, classifies incidents, and generates a self-contained HTML report.
+Self-updating static dashboard tracking security incidents across Sudan, South Sudan, DRC, Somalia, and Ethiopia. A Python pipeline scrapes curated news + X (Twitter) sources, classifies incidents, and generates a self-contained HTML report.
 
 **Live site:** https://lizciat.github.io/security_dashboard/
 **Past runs:** https://lizciat.github.io/security_dashboard/runs/
+
+> **Looking for the user guide?**
+> Read [`dashboard_guide.md`](./dashboard_guide.md) directly in your browser, or download [`dashboard_guide.pdf`](./dashboard_guide.pdf) to print or share.
 
 ## How it updates
 
