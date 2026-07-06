@@ -1020,6 +1020,15 @@ const INCIDENTS       = __INCIDENTS_DATA__;
 const SOCIAL_MONITORS = __SOCIAL_MONITORS_DATA__;
 const COUNTRIES       = __COUNTRIES_DATA__;
 
+/* Reference "today" for all recency logic. This dashboard is a STATIC snapshot,
+   so "today" must anchor to the data (the most recent incident date in this
+   snapshot), NOT the viewer's browser clock. Otherwise a dashboard viewed the
+   day after it was generated reports 0 incidents "today" — every incident is
+   dated "yesterday" relative to new Date(). Falls back to the browser date only
+   if the snapshot somehow has no dated incidents.
+   (getLatestIncidentDate / localDateStr are hoisted function declarations.) */
+const DATA_TODAY = getLatestIncidentDate(INCIDENTS) || localDateStr(new Date());
+
 /* ── O(1) lookup maps — built once at startup, never mutated ── */
 const _countryMap  = Object.fromEntries(COUNTRIES.map(c => [c.name, c]));
 const _incidentMap = Object.fromEntries(
@@ -1168,11 +1177,13 @@ function getLatestIncidentDate(data) {
   return data.reduce((best, i) => (i.date && i.date > best ? i.date : best), data[0].date || "");
 }
 
-// True when a YYYY-MM-DD string matches today's local calendar date.
-// Incidents store dates only (no time), so "last 24 h" = today's date.
+// True when an incident is dated on the snapshot's most recent day.
+// Incidents store dates only (no time), so "last 24 h" = the latest data date.
+// Anchored to DATA_TODAY (the data), not the browser clock, so a snapshot
+// viewed a day later still reports its freshest incidents as "new".
 function isWithinLast24Hours(dateStr) {
   if (!dateStr || dateStr.length < 10) return false;
-  return dateStr === localDateStr(new Date());
+  return dateStr === DATA_TODAY;
 }
 
 /* ══════════════════════════════════════════
@@ -1429,10 +1440,10 @@ function renderKPIs(data) {
 ══════════════════════════════════════════ */
 function renderKPIs2(data) {
   // "Last 24 h" — incidents only store YYYY-MM-DD, not timestamps, so true
-  // sub-hour precision is impossible. We use today's LOCAL calendar date as
-  // the threshold: an incident is "new" if it was dated today.
-  // toISOString() is NOT used (UTC offset causes off-by-one in UTC+ zones).
-  const todayStr = localDateStr(new Date());
+  // sub-hour precision is impossible. Anchor to DATA_TODAY (the snapshot's most
+  // recent incident date), NOT the browser clock, so a dashboard viewed the day
+  // after generation still surfaces its freshest incidents instead of showing 0.
+  const todayStr = DATA_TODAY;
   const new24 = data.filter(i => i.date === todayStr).length;
 
   const escalated = data.filter(i => getStatus(i) === "escalated").length;
@@ -2198,7 +2209,7 @@ function copyBrief() {
 ══════════════════════════════════════════ */
 function logQADiagnostics(filtered) {
   if (!DEBUG_QA) return;
-  const today     = localDateStr(new Date());
+  const today     = DATA_TODAY;
   const yesterday = subtractDays(today, 1);
   const last24    = filtered.filter(i => isWithinLast24Hours(i.date));
   const crits     = filtered.filter(i => i.severity === "Critical");

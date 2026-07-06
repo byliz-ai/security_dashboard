@@ -9,7 +9,8 @@ Usage:
 
 Country profiles, severity levels, regions, operational implications and
 recommended actions are all built automatically from the scraped incidents.
-No historical data is retained between runs.
+A compact per-country daily count is retained in history.json (repo root) to
+power the trend sparklines across runs.
 
 Run pipeline.py instead of this script directly for the full automated workflow.
 """
@@ -32,18 +33,91 @@ from scraper import filter_incidents, build_country_profiles
 
 # ── per-country sparkline history (last N days) ──────────────────────────────
 
+# Durable rolling history: committed at the repo root so it survives across CI
+# runs. output/ is gitignored and the workflow never commits site/runs/ back, so
+# without this file every CI run rebuilt the trend chart from scratch and the
+# sparklines were flat. Shape: {"Sudan": {"2026-07-06": 12, ...}, ...}
+HISTORY_STORE = ROOT.parent / "history.json"
+
+
+def _counts_from_incidents(incidents: list) -> dict:
+    """Return {country: {date: count}} for a list of incident dicts."""
+    daily = defaultdict(lambda: defaultdict(int))
+    for inc in incidents or []:
+        c = inc.get("country")
+        d = (inc.get("date") or "")[:10]
+        if c and d:
+            daily[c][d] += 1
+    return daily
+
+
+def _merge_max(dst: dict, src: dict) -> None:
+    """Merge src {country: {date: count}} into dst, keeping the max per date.
+    max() (not +=) makes this idempotent: re-running the pipeline for the same
+    day, or the same run showing up in multiple sources, never double-counts."""
+    for country, days in src.items():
+        bucket = dst.setdefault(country, {})
+        for d, n in days.items():
+            dd = d[:10]
+            if dd:
+                bucket[dd] = max(int(bucket.get(dd, 0)), int(n))
+
+
+def _update_history_store(current_incidents: list, keep_days: int = 60) -> None:
+    """Fold the current run's per-country daily counts into HISTORY_STORE,
+    prune anything older than keep_days, and write it back. Never raises."""
+    store: dict = {}
+    if HISTORY_STORE.exists():
+        try:
+            loaded = json.loads(HISTORY_STORE.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                store = loaded
+        except Exception:
+            store = {}
+
+    _merge_max(store, _counts_from_incidents(current_incidents))
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=keep_days)).strftime("%Y-%m-%d")
+    for country in list(store.keys()):
+        store[country] = {d: n for d, n in store[country].items() if d >= cutoff}
+        if not store[country]:
+            del store[country]
+
+    try:
+        HISTORY_STORE.write_text(
+            json.dumps(store, indent=2, sort_keys=True, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        print(f"  ⚠  Could not write history store ({HISTORY_STORE}): {e}", file=sys.stderr)
+
+
 def _load_history(window_days: int = 14, current_incidents: list = None) -> dict:
     """
-    Scan past run folders (local output/run_* and repo site/runs/run_*) and
-    return a per-country, per-day count map suitable for sparklines.
+    Build a per-country, per-day count map for sparklines from all available
+    history sources, then slice the trailing N-day window ending today.
+
+    Sources (merged with max() so none double-counts the others):
+      1. HISTORY_STORE — durable rolling counts persisted across CI runs
+      2. legacy run folders — local output/run_* and repo site/runs/run_*
+      3. the current run's incidents (defensive; usually already in the store)
 
     Output: {"Sudan": [c0, c1, ..., c{N-1}], ...} where index 0 is the oldest
     day in the window and the last index is today.
     """
     repo_root = ROOT.parent
-    daily = defaultdict(lambda: defaultdict(int))   # {country: {date: count}}
+    daily: dict = {}   # {country: {date: count}}
 
-    # Past runs persisted in the repo (CI) + local output dir (dev)
+    # 1. Durable rolling store (primary source across CI runs)
+    if HISTORY_STORE.exists():
+        try:
+            store = json.loads(HISTORY_STORE.read_text(encoding="utf-8"))
+            if isinstance(store, dict):
+                _merge_max(daily, store)
+        except Exception:
+            pass
+
+    # 2. Legacy run folders committed in the repo + local output dir (dev)
     seen_runs = set()
     for base in (ROOT / "output", repo_root / "site" / "runs"):
         if not base.exists():
@@ -59,32 +133,20 @@ def _load_history(window_days: int = 14, current_incidents: list = None) -> dict
                 items = json.loads(ij.read_text(encoding="utf-8"))
             except Exception:
                 continue
-            if not isinstance(items, list):
-                continue
-            for inc in items:
-                c = inc.get("country")
-                d = (inc.get("date") or "")[:10]
-                if c and d:
-                    daily[c][d] += 1
+            if isinstance(items, list):
+                _merge_max(daily, _counts_from_incidents(items))
 
-    # Always include the current run's counts (in case it's the very first one)
+    # 3. Current run (defensive — normally already folded into the store)
     if current_incidents:
-        for inc in current_incidents:
-            c = inc.get("country")
-            d = (inc.get("date") or "")[:10]
-            if c and d:
-                daily[c][d] = max(daily[c][d], 0)  # don't double-count; current run is in output/
-                # use max — past run for the same date may exist if pipeline ran twice today
+        _merge_max(daily, _counts_from_incidents(current_incidents))
 
     # Build the trailing N-day window ending today
     today = datetime.now(timezone.utc).date()
     days = [(today - timedelta(days=i)).strftime("%Y-%m-%d")
             for i in range(window_days - 1, -1, -1)]
 
-    history = {}
-    for country, counts in daily.items():
-        history[country] = [counts.get(d, 0) for d in days]
-    return history
+    return {country: [counts.get(d, 0) for d in days]
+            for country, counts in daily.items()}
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -194,6 +256,9 @@ def generate(
         total_sources = 0
 
     # ── per-country 14-day history (sparklines + chart comparison) ─────────
+    # Persist this run's counts into the durable store first so the window
+    # (and every future run) reflects it, then build the trailing 14 days.
+    _update_history_store(incidents)
     country_history = _load_history(window_days=14, current_incidents=incidents)
 
     html = (
