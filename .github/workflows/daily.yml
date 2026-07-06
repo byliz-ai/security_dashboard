@@ -8,7 +8,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write      # allow committing history.json (trend persistence) back
   pages: write
   id-token: write
 
@@ -48,10 +48,22 @@ jobs:
             echo "ERROR: site/index.html is missing or empty"
             exit 1
           fi
-          # Fail if only the placeholder is present after a real run
           if grep -q "PLACEHOLDER_BUILD_PENDING" site/index.html; then
             echo "ERROR: pipeline did not produce a dashboard; placeholder still in place"
             exit 1
+          fi
+
+      - name: Persist trend history
+        continue-on-error: true
+        run: |
+          if [ -n "$(git status --porcelain history.json)" ]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add history.json
+            git commit -m "chore: update trend history [skip ci]"
+            git push origin HEAD:${GITHUB_REF_NAME:-main}
+          else
+            echo "history.json unchanged — nothing to commit"
           fi
 
       - name: Upload Pages artifact
